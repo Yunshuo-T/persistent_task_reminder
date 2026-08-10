@@ -1,0 +1,11 @@
+{
+	"id": "persistent-task-reminder",
+	"name": "Persistent Task Reminder",
+	"version":"0.1.0",
+	"minAppVersion": "1.0.0",
+	"description": "Repeatedly remind active Obsidian Tasks between their start and due dates.",
+	"author": "Obsidian",
+	"authorUrl": "https://obsidian.md",
+	"fundingUrl": "https://obsidian.md/pricing",
+	"isDesktopOnly": false
+}

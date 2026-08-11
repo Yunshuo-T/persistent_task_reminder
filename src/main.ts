@@ -35,6 +35,7 @@ const START_RE = /🛫\s*(\d{4}-\d{2}-\d{2})/;
 const DUE_RE = /📅\s*(\d{4}-\d{2}-\d{2})/;
 const REMINDER_RE =
 	/⏰\s*(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}))?/;
+const DONE_RE = /✅\s*\d{4}-\d{2}-\d{2}/;
 
 export default class PersistentTaskReminderPlugin extends Plugin {
 	settings: PersistentTaskReminderSettings;
@@ -150,9 +151,20 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 
 		// If task is completed, remove only reminders this plugin created.
 		if (completedMatch) {
-			if (isManaged && REMINDER_RE.test(line)) {
+			if (REMINDER_RE.test(line)) {
+				if (isManaged) {
+					delete this.managedTaskKeys[key];
+				}
+
+				markStateChanged();
 				return this.removeReminder(line);
 			}
+
+			if (isManaged) {
+				delete this.managedTaskKeys[key];
+				markStateChanged();
+			}
+
 			return line;
 		}
 
@@ -181,14 +193,19 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 			dueDate
 		);
 
-		// Deadline window is over. Remove helper-managed reminder.
+		// Deadline window is over. Remove helper-managed reminder and cancel tracking.
 		if (!nextReminder) {
+			if (isManaged) {
+				delete this.managedTaskKeys[key];
+				markStateChanged();
+			}
+
 			if (reminderMatch && isManaged) {
 				return this.removeReminder(line);
 			}
+
 			return line;
 		}
-
 		// No reminder yet: insert one and claim this task as helper-managed.
 		if (!reminderMatch) {
 			this.managedTaskKeys[key] = true;
@@ -325,6 +342,7 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 	getTaskKey(filePath: string, line: string): string {
 		const normalizedLine = line
 			.replace(REMINDER_RE, "")
+			.replace(DONE_RE, "")
 			.replace(/^\s*[-*]\s+\[[xX ]\]\s*/, "- [ ] ")
 			.replace(/\s+/g, " ")
 			.trim();

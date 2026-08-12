@@ -38,7 +38,7 @@ const REMINDER_RE =
 const DONE_RE = /✅\s*\d{4}-\d{2}-\d{2}/;
 
 export default class PersistentTaskReminderPlugin extends Plugin {
-	settings: PersistentTaskReminderSettings;
+	settings: PersistentTaskReminderSettings = DEFAULT_SETTINGS;
 	managedTaskKeys: Record<string, boolean> = {};
 
 	async onload() {
@@ -177,14 +177,10 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 
 		const startDate = startMatch[1];
 		const dueDate = dueMatch[1];
-
-		const reminderMatch = line.match(REMINDER_RE);
-
-		// If task already has a manual reminder and this plugin did not create it,
-		// do not touch it.
-		if (reminderMatch && !isManaged) {
+		if (!startDate || !dueDate) {
 			return line;
 		}
+		const reminderMatch = line.match(REMINDER_RE);
 
 		const now = new Date();
 		const nextReminder = this.computeNextReminder(
@@ -193,24 +189,28 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 			dueDate
 		);
 
+		// From now on, every unfinished task with both 🛫 and 📅
+		// is managed by this helper plugin until the due date.
+		if (!isManaged) {
+			this.managedTaskKeys[key] = true;
+			markStateChanged();
+		}
+
 		// Deadline window is over. Remove helper-managed reminder and cancel tracking.
 		if (!nextReminder) {
-			if (isManaged) {
+			if (this.managedTaskKeys[key]) {
 				delete this.managedTaskKeys[key];
 				markStateChanged();
 			}
 
-			if (reminderMatch && isManaged) {
+			if (reminderMatch) {
 				return this.removeReminder(line);
 			}
 
 			return line;
 		}
-		// No reminder yet: insert one and claim this task as helper-managed.
-		if (!reminderMatch) {
-			this.managedTaskKeys[key] = true;
-			markStateChanged();
 
+		if (!reminderMatch) {
 			return this.insertReminder(
 				line,
 				this.formatDateTime(nextReminder)
@@ -219,22 +219,29 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 
 		const currentReminder = this.parseReminderDateTime(line);
 
+		// If reminder exists but cannot be parsed, replace it with the calculated one.
 		if (!currentReminder) {
-			return line;
+			return this.replaceReminder(
+				line,
+				this.formatDateTime(nextReminder)
+			);
 		}
 
 		const graceMs = this.settings.graceMinutes * 60 * 1000;
 		const reminderHasClearlyPassed =
 			currentReminder.getTime() < now.getTime() - graceMs;
 
-		if (!reminderHasClearlyPassed) {
-			return line;
+		// Important fix:
+		// If the current ⏰ is in the past but the 📅 deadline is still in the future,
+		// update ⏰ to the next valid reminder slot.
+		if (reminderHasClearlyPassed) {
+			return this.replaceReminder(
+				line,
+				this.formatDateTime(nextReminder)
+			);
 		}
 
-		return this.replaceReminder(
-			line,
-			this.formatDateTime(nextReminder)
-		);
+		return line;
 	}
 
 	computeNextReminder(
@@ -335,6 +342,9 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 		const date = match[1];
 		const time =
 			match[2] ?? this.settings.defaultReminderTime;
+		if (!date) {
+        return null;
+    	}
 
 		return this.dateAtMinutes(date, this.timeToMinutes(time));
 	}
@@ -364,10 +374,14 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 	}
 
 	dateAtMinutes(date: string, minutes: number): Date {
-		const [year, month, day] = date
-			.split("-")
-			.map((part) => Number(part));
+		const [yearStr, monthStr, dayStr] = date.split("-");
 
+		const year = Number(yearStr);
+		const month = Number(monthStr);
+		const day = Number(dayStr);
+		if ([year, month, day].some((value) => Number.isNaN(value))) {
+        throw new Error(`Invalid date: ${date}`);
+    	}
 		const result = new Date(year, month - 1, day);
 		result.setHours(
 			Math.floor(minutes / 60),

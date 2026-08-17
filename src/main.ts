@@ -13,6 +13,7 @@ interface PersistentTaskReminderSettings {
 	repeatEveryHours: number;
 	graceMinutes: number;
 	scanIntervalMinutes: number;
+	trackOverdueTasks: boolean;
 }
 
 interface PersistentTaskReminderData {
@@ -26,6 +27,7 @@ const DEFAULT_SETTINGS: PersistentTaskReminderSettings = {
 	repeatEveryHours: 3,
 	graceMinutes: 3,
 	scanIntervalMinutes: 10,
+	trackOverdueTasks: true,
 };
 
 const UNCHECKED_TASK_RE = /^(\s*[-*]\s+\[ \]\s*)(.*)$/;
@@ -244,69 +246,85 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 		return line;
 	}
 
-	computeNextReminder(
-		now: Date,
-		startDate: string,
-		dueDate: string
-	): Date | null {
-		const activeStartMinutes = this.timeToMinutes(
-			this.settings.defaultReminderTime
-		);
+computeNextReminder(
+	now: Date,
+	startDate: string,
+	dueDate: string
+): Date | null {
+	const activeStartMinutes = this.timeToMinutes(
+		this.settings.defaultReminderTime
+	);
 
-		const activeEndMinutes = this.timeToMinutes(
-			this.settings.activeEndTime
-		);
+	const activeEndMinutes = this.timeToMinutes(
+		this.settings.activeEndTime
+	);
 
-		if (activeEndMinutes < activeStartMinutes) {
-			return null;
-		}
-
-		const repeatMinutes =
-			Math.max(1, this.settings.repeatEveryHours) * 60;
-
-		const start = this.dateAtMinutes(startDate, activeStartMinutes);
-		const end = this.dateAtMinutes(dueDate, activeEndMinutes);
-
-		if (end.getTime() < now.getTime()) {
-			return null;
-		}
-
-		const minimumCandidate = new Date(
-			Math.max(now.getTime() + 60 * 1000, start.getTime())
-		);
-
-		const day = this.startOfDay(minimumCandidate);
-		const lastDay = this.startOfDay(end);
-
-		while (day.getTime() <= lastDay.getTime()) {
-			for (
-				let minutes = activeStartMinutes;
-				minutes <= activeEndMinutes;
-				minutes += repeatMinutes
-			) {
-				const candidate = new Date(day);
-				candidate.setHours(
-					Math.floor(minutes / 60),
-					minutes % 60,
-					0,
-					0
-				);
-
-				if (
-					candidate.getTime() >= start.getTime() &&
-					candidate.getTime() >= minimumCandidate.getTime() &&
-					candidate.getTime() <= end.getTime()
-				) {
-					return candidate;
-				}
-			}
-
-			day.setDate(day.getDate() + 1);
-		}
-
+	if (activeEndMinutes < activeStartMinutes) {
 		return null;
 	}
 
+	const repeatMinutes =
+		Math.max(1, this.settings.repeatEveryHours) * 60;
+
+	const start = this.dateAtMinutes(startDate, activeStartMinutes);
+	const dueEnd = this.dateAtMinutes(dueDate, activeEndMinutes);
+
+	const isOverdue = dueEnd.getTime() < now.getTime();
+
+	// Old behavior: stop after deadline.
+	// New behavior: only stop if overdue tracking is disabled.
+	if (isOverdue && !this.settings.trackOverdueTasks) {
+		return null;
+	}
+
+	const minimumCandidate = new Date(
+		Math.max(now.getTime() + 60 * 1000, start.getTime())
+	);
+
+	let searchEnd = dueEnd;
+
+	// If the task is overdue but unfinished, keep searching for the next
+	// reminder slot today or tomorrow.
+	if (isOverdue && this.settings.trackOverdueTasks) {
+		const horizon = new Date(minimumCandidate);
+		horizon.setDate(horizon.getDate() + 1);
+		searchEnd = this.dateAtMinutes(
+			this.formatDate(horizon),
+			activeEndMinutes
+		);
+	}
+
+	const day = this.startOfDay(minimumCandidate);
+	const lastDay = this.startOfDay(searchEnd);
+
+	while (day.getTime() <= lastDay.getTime()) {
+		for (
+			let minutes = activeStartMinutes;
+			minutes <= activeEndMinutes;
+			minutes += repeatMinutes
+		) {
+			const candidate = new Date(day);
+			candidate.setHours(
+				Math.floor(minutes / 60),
+				minutes % 60,
+				0,
+				0
+			);
+
+			if (
+				candidate.getTime() >= start.getTime() &&
+				candidate.getTime() >= minimumCandidate.getTime() &&
+				candidate.getTime() <= searchEnd.getTime()
+			) {
+				return candidate;
+			}
+		}
+
+		day.setDate(day.getDate() + 1);
+	}
+
+	return null;
+}
 	insertReminder(line: string, reminderDateTime: string): string {
 		const dueMatch = line.match(DUE_RE);
 		const reminderText = `⏰ ${reminderDateTime}`;
@@ -408,6 +426,14 @@ export default class PersistentTaskReminderPlugin extends Plugin {
 
 		return `${year}-${month}-${day} ${hours}:${minutes}`;
 	}
+
+	formatDate(date: Date): string {
+	const year = date.getFullYear();
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+
+	return `${year}-${month}-${day}`;
+}
 }
 
 class PersistentTaskReminderSettingTab extends PluginSettingTab {
@@ -505,6 +531,19 @@ class PersistentTaskReminderSettingTab extends PluginSettingTab {
 								parsed;
 							await this.plugin.savePluginData();
 						}
+					})
+			);
+		new Setting(containerEl)
+			.setName("Track overdue tasks")
+			.setDesc(
+				"Continue updating reminders after the due date until the task is completed."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.trackOverdueTasks)
+					.onChange(async (value) => {
+						this.plugin.settings.trackOverdueTasks = value;
+						await this.plugin.savePluginData();
 					})
 			);
 	}
